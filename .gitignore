@@ -1,0 +1,13 @@
+# Publish gate: present in the working tree, never committed.
+# Session handoff notes stay local.
+**/HANDOFF-*.md
+# Real compose env files carry machine paths; ship only .env.example.
+**/.env
+# KLD measurement captures (regenerate with the harness; excluded by decision).
+lfm-w8a8/eval/results/
+
+# Local build artifacts (never committed anywhere in this repo).
+.venv/
+.pytest_cache/
+__pycache__/
+*.py[cod]

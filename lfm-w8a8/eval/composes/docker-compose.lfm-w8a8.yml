@@ -1,0 +1,66 @@
+# ===========================================================================
+services:
+  LFM2.5-24B-A2B-W8A8:
+    image: vllm/vllm-openai:v0.29.0
+    container_name: "LFM2.5-24B-A2B-W8A8"
+    restart: unless-stopped
+    ports:
+      - "8051:8000"
+    volumes:
+      - ${MODEL_WEIGHTS_DIR:-~/models}:/root/.cache/huggingface
+      - ${MODEL_CACHE_DIR:-~/cache}/lfm-w8a8/torch_compile:/root/.cache/vllm/torch_compile_cache
+      - ${MODEL_CACHE_DIR:-~/cache}/lfm-w8a8/triton:/root/.triton/cache
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      # - HUGGING_FACE_HUB_TOKEN=***
+      - CUDA_DEVICE_ORDER=PCI_BUS_ID
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - NCCL_CUMEM_ENABLE=0
+      - NCCL_P2P_DISABLE=1
+      - VLLM_NO_USAGE_STATS=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - OMP_NUM_THREADS=1
+      - VLLM_LOGGING_LEVEL=INFO
+    shm_size: "32gb"
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --model
+      - /root/.cache/huggingface/LFM2.5-24B-A2B-W8A8
+      - --served-model-name
+      - "LFM2.5-24B-A2B"
+      - --tensor-parallel-size
+      - "${TP:-2}"
+      - --pipeline-parallel-size
+      - "${PP:-1}"
+      - --gpu-memory-utilization
+      - "${GPU_MEMORY_UTILIZATION:-0.94}"
+      - --max-num-batched-tokens
+      - "8192"
+      - --trust-remote-code
+      - --reasoning-parser
+      - qwen3
+      - --default-chat-template-kwargs
+      - '{"enable_thinking": true}'
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - lfm2
+      - --enable-prefix-caching
+      - --enable-chunked-prefill
+      - --max-num-seqs
+      - "${MAX_NUM_SEQS:-6}"
+      - --limit-mm-per-prompt
+      - '{"image":1,"audio":0}'
+      - --enable-per-request-metrics
+      - --max-logprobs
+      - "512"

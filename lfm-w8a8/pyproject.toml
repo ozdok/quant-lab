@@ -1,0 +1,34 @@
+[project]
+name = "lfm-w8a8"
+version = "0.1.0"
+license = { text = "Apache-2.0" }
+description = "Standard llmcompressor W8A8 INT8 for LFM2.5-24B-A2B (LFM2.5 hybrid short-conv + GQA + MoE)"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4",
+    "safetensors>=0.4",
+    "numpy>=1.26",
+    "tokenizers>=0.21",
+    "transformers==5.15.1",  # NOT >=: llmcompressor 0.13.0 pins transformers<5.15
+    # and drags in 5.14.1, whose save_pretrained is broken for offloaded
+    # models (Freaksterz Dockerfile). Force-reinstalled --no-deps, keep exact.
+    "accelerate>=0.33",
+    "llmcompressor>=0.8",
+    # llmcompressor 0.13.0 needs compressed-tensors==0.18.0
+    # (is_cached_attention_module); 0.17.0 (vllm 0.29.0's pin) lacks it.
+    "compressed-tensors==0.18.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+calib = [
+    "datasets>=4.0,<5",
+    "jinja2>=3.1,<4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["scripts"]
+
+[tool.setuptools.packages.find]
+include = ["lfm2_common*"]

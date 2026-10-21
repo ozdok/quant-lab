@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Calibration artifacts (large, regenerate from capture)
+calib/acts/
+calib/scales-*.pt
+# Calibration corpus v2 contains private agent traces (do NOT publish).
+# v1 (calib_mixed.txt) is clean Wikipedia text and ships with the repo, so
+# capture-lfm2.py runs with its default --corpus on a fresh clone.
+calib/calib_mixed_v2.txt
+
+# Quantizer scratch
+*.offload/
+*.capture-offload/
+
+# Logs
+logs/*.log
