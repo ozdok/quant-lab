@@ -277,8 +277,11 @@ with routing forced to the reference, corrected A cut the error 3.69 -> 3.58%
 (layer 3) and 3.52 -> 2.73% (layer 24); with free routing the BF16 re-rounding
 noise above erased that (3.8% vs 3.5% at layer 24).
 
-Ruled out as causes: first-token massive activations (0.5-1.1% of output
-power, about their 0.78% share of rows) and overfitting to the four sampled
+Ruled out as causes: the always-sampled first-token rows (the capture takes 128
+rows per window and token 0 is always one of them, so 1/128 = 0.78% of rows;
+across MoE layers they carry 0.5-1.1% of the routed-expert output power — about
+their proportional share — and their largest activation is no larger than a
+typical row's; re-measured 2026-10-22) and overfitting to the four sampled
 experts (+43-52% on unseen experts too).
 
 ### 5. The yardstick: what "match FP8" means
