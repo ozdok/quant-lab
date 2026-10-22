@@ -2,9 +2,12 @@
 
 W8A8 INT8 (`compressed-tensors`) for **LFM2.5-24B-A2B** — Liquid AI's 24B MoE
 reasoning model (2B active/token). No GPTQ anywhere (design choice: GPTQ
-prioritizes by calibration activations and overfits to the corpus; RTN treats
-every weight equally). SmoothQuant folds are exact math, not fitting, so
-they're allowed.
+prioritizes by calibration activations and overfits to the corpus; RTN —
+round-to-nearest — treats every weight equally). SmoothQuant folds are exact
+math, not fitting, so they're allowed.
+
+Terms used below — the folds, the four Paths, alpha, `W8A8`/`W8A16`, KLD and
+floor-free — are defined once in [`docs/GLOSSARY.md`](docs/GLOSSARY.md).
 
 Every module name below was verified against the published checkpoint's
 safetensors headers and config — names that look interchangeable across model

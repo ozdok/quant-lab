@@ -7,58 +7,14 @@ work happened, so the headline result is not at the top: the shipped build is
 beats the vendor FP8 checkpoint on every accuracy metric measured while
 running 8.2-8.6% faster decode.
 
-Throughout: **the build node** is the GPU host that quantizes, serves, and
-captures KLD; **the client host** drives the speed/extract runs and never
-serves a model.
-
 ## Notation and conventions
 
-Terms used from here on without further explanation. Nothing else in the repo
-defines the fold names — `AGENTS.md` describes A and B in passing, but this is
-the only place all four are stated.
-
-**Folds.** Smoothing rewrites that move a per-channel scale off an activation
-and into the weights on either side of it, so the quantizer sees a flatter
-tensor. Planned in `scripts/apply-smoothing-lfm2.py::plan_ops()`; each fold's
-algebra is pinned in `tests/test_fold_plan.py`. They are independent and
-selected with `--folds`.
-
-| fold | scale leaves | scale enters | scope |
-|---|---|---|---|
-| **A** | `ffn_norm` output | every consumer of it — the router (`feed_forward.gate`) and each expert's `w1`/`w3` inputs | layers 2-39 |
-| **B** | `operator_norm` output | attention `q_proj`, `k_proj`, `v_proj` inputs | the 10 attention layers |
-| **C** | each expert's up projection | `w3` rows out, `w2` (down) columns in | layers 2-39, per expert |
-| **E** | each `v_proj` output | `out_proj` input columns, GQA-expanded | the 10 attention layers |
-
-**Paths.** Successive build attempts, in the order they were tried.
-
-| path | scheme | outcome |
-|---|---|---|
-| **Path 1** | `W8A8` — RTN (round-to-nearest), all 7,342 Linears | shipped first; the baseline later paths are measured against |
-| **Path 2** | `SQ-W8A8` — SmoothQuant on Path 1's weights | regressed against Path 1 (KLD 0.7042 vs 0.2161), retired; see the post-mortem |
-| **Path 3** | `W8A16-CHANNEL` — per-channel INT8 weights, no activation quantizer | the probe that priced activation quantization |
-| **Path 4** | `W8A8-EXPERTS` — the 7,296 experts W8A8, 46 attention/dense Linears W8A16 | **the shipped build** |
-
-**Alpha** is `scripts/lfm2_alpha.py` — the offline proxy that computes the
-per-channel scale vectors the folds move, from calibration rows, before the
-quantizer runs. It neither quantizes nor produces a checkpoint.
-
-**Measurement levels.** *Matmul level* is one Linear in isolation, fed
-calibration rows. *Block level* is a whole model block — a MoE block or an
-attention block — end to end. "Block" elsewhere (FP8 weight blocks) means
-something unrelated.
-
-**Error.** Unless stated otherwise, error is the relative squared error of a
-tensor against its unquantized self — `‖ŷ − y‖² / ‖y‖²` — reported as a
-percentage. It is dimensionless, so it is only meaningful next to a named
-baseline and a named level (matmul or block).
-
-**Conventions.** KLD is teacher-forced, full-vocab, against the offline BF16
-capture, over 240 × 512-token WikiText-2 windows (511 scored positions each,
-top-K 512). Logs are natural; everything is in nats. `q floor hits` are
-positions where a reference id is absent from an arm's stored top-K, so its
-tail mass is spread uniformly across the rest of the vocabulary — the floor
-assumption that `kld-paired-floorfree.py` removes.
+Vocabulary — the folds, the four Paths, alpha, the schemes, the measurement
+levels and the floor — is defined once in [`GLOSSARY.md`](GLOSSARY.md), so it
+cannot drift between documents. Two roles are named throughout: **the build
+node** is the GPU host that quantizes, serves, and captures KLD, and **the
+client host** drives the speed and extraction runs over LAN and never serves a
+model.
 
 ## Design review (resolved during development)
 

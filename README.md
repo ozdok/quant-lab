@@ -17,6 +17,10 @@ different schemes on different module classes. A SmoothQuant path was built and
 evaluated, and is retained as a documented negative result. Further formats are
 added here as they are tested on the same harness.
 
+Terms used below — Path 1-4, `W8A8`/`W8A16`, and **floor-free** (the paired
+estimator that removes the top-K tail-truncation floor) — are defined in
+[`lfm-w8a8/docs/GLOSSARY.md`](lfm-w8a8/docs/GLOSSARY.md).
+
 ## LFM2.5-24B-A2B — first model
 
 Liquid AI's 24B MoE (2B active/token; 64 routed experts, top-4; gated short
