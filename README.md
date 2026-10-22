@@ -34,24 +34,29 @@ accuracy metric while running 8.2–8.6% faster decode on Ampere.
 240 × 512-token WikiText-2 windows (122,640 positions), top-K 512. Candidates
 served through vLLM 0.29.0, TP2 on Ampere (2× RTX 3090 Ti / 3090).
 
-| Checkpoint | Scheme | Mean KLD vs BF16 ↓ | Top-1 agree ↑ | PPL ↓ (BF16 29.32) |
-|---|---|---:|---:|---:|
-| `W8A16-CHANNEL` | 7,342 Linears, weight-only W8A16 | 0.1369 | 84.05% | 29.04 |
-| **[`W8A8-EXPERTS`](https://huggingface.co/Don-oz/LFM2.5-24B-A2B-W8A8-EXPERTS)** (shipped) | 7,296 experts W8A8 + 46 attn/dense W8A16 | **0.1527** | **82.91%** | **28.88** |
-| LiquidAI FP8 (vendor) | FP8 weight-only on SM86 | 0.1818 | 81.18% | 29.29 |
-| `W8A8` | 7,342 Linears, uniform W8A8 | 0.2161 | 79.72% | 29.21 |
+| Checkpoint | Precision split (7,342 quantized Linears) | Mean KLD ↓ | Median KLD ↓ | Paired Δ vs FP8 (floor-free) | Top-1 agree ↑ | PPL ↓ (BF16 29.32) | `q` floor hits |
+|---|---|---:|---:|---:|---:|---:|---:|
+| **Path 3: `W8A16-CHANNEL`** | 7,342 W8A16 (per-channel INT8 weight-only) | **0.1369** | **0.0652** | −0.0364 (t = -57.9) | **84.05%** | **29.04** | 15.63% |
+| **Path 4: [`W8A8-EXPERTS`](https://huggingface.co/Don-oz/LFM2.5-24B-A2B-W8A8-EXPERTS)** (shipped) | **7,296 experts W8A8 + 46 attn/dense W8A16** | **0.1527** | **0.0749** | **−0.0236 (t = -36.0)** | **82.91%** | **28.88** | 16.58% |
+| [`LiquidAI/LFM2.5-24B-A2B-FP8`](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-FP8) | Official FP8 (weight-only W8A16 on Ampere) | 0.1818 | 0.0954 | baseline | 81.18% | 29.29 | 18.27% |
+| **Path 1: `W8A8`** | 7,342 W8A8 (experts + attn + dense 0–1) | 0.2161 | 0.1180 | +0.0265 (t = +36.8) | 79.72% | 29.21 | 19.83% |
+| Path 2: `SQ-W8A8` (pre-fix, retired) | SmoothQuant + uniform W8A8 (unscaled router bug) | 0.7042 | — | — | 65.10% | 36.72 | — |
+
+- **Paired Path 4 (`W8A8-EXPERTS`) vs official FP8:** Δ = -0.0236 ± 0.00066 (t = -36.0, −16.7% floor-free KLD), Path 4 closer to BF16 at **60.99%** of token positions.
+- **Paired Path 4 (`W8A8-EXPERTS`) vs Path 1 (`W8A8`):** Δ = -0.0509 ± 0.00071 (t = -71.9, −30.3% floor-free KLD), Path 4 closer to BF16 at **68.46%** of token positions.
 
 ### Speed — sequential single-stream extraction
 
-Four real arXiv papers, 5.5K–50.6K prompt tokens, temperature 0, measured over
-LAN from a separate client host. Cells are decode tok/s / TTFT.
+Measured from a separate client host over LAN (`extract_test.py`, sequential single-stream, `temperature=0`, `--enable-thinking`) across four real arXiv HTML papers spanning **5.5K to 50.6K prompt tokens**. Cells are decode tok/s / TTFT (paper IDs are arXiv IDs).
 
-| Prompt (tokens) | Vendor FP8 | `W8A8` | `W8A16-CHANNEL` | **`W8A8-EXPERTS`** | vs FP8 |
-|---|---:|---:|---:|---:|---:|
-| 5,525 | 184.5 / 778 ms | 197.2 / 653 ms | 185.9 / 757 ms | **200.4 / 661 ms** | **+8.6%** |
-| 20,888 | 175.0 / 2,923 ms | 187.4 / 2,884 ms | 176.5 / 2,820 ms | **189.9 / 2,919 ms** | **+8.5%** |
-| 24,105 | 173.4 / 3,281 ms | 185.1 / 2,752 ms | 174.1 / 3,163 ms | **187.8 / 2,805 ms** | **+8.3%** |
-| 50,572 | 163.5 / 7,335 ms | 174.5 / 6,234 ms | 164.6 / 7,090 ms | **176.9 / 6,322 ms** | **+8.2%** |
+| Checkpoint | `2607.15866v1` (5,525 tok) | `2606.16140v1` (20,888 tok) | `2603.28052v1` (24,105 tok) | `2610.22111v1` (50,572 tok) | vs FP8 decode |
+|---|---|---:|---:|---:|---:|
+| `W8A16-CHANNEL` | 185.9 tok/s / 757 ms | 176.5 tok/s / 2,820 ms | 174.1 tok/s / 3,163 ms | 164.6 tok/s / 7,090 ms | ~+0.7% |
+| **[`W8A8-EXPERTS`](https://huggingface.co/Don-oz/LFM2.5-24B-A2B-W8A8-EXPERTS)** (shipped) | **200.4 tok/s / 661 ms** | **189.9 tok/s / 2,919 ms** | **187.8 tok/s / 2,805 ms** | **176.9 tok/s / 6,322 ms** | **+8.2 to +8.6%** |
+| LiquidAI FP8 (vendor) | 184.5 tok/s / 778 ms | 175.0 tok/s / 2,923 ms | 173.4 tok/s / 3,281 ms | 163.5 tok/s / 7,335 ms | baseline |
+| `W8A8` | 197.2 tok/s / 653 ms | 187.4 tok/s / 2,884 ms | 185.1 tok/s / 2,752 ms | 174.5 tok/s / 6,234 ms | ~+6.9% |
+
+*(Note: Path 3 vs Path 4 is a back-to-back comparison showing the pure +7.5% to +7.9% decode and −10.8% 50.6K-prefill gain from moving the 7,296 experts onto W8A8 INT8 tensor cores.)*
 
 Methodology, per-path post-mortems, and the mixed-precision config live in
 [`lfm-w8a8/README.md`](lfm-w8a8/README.md). The canonical copy of these results is the
