@@ -1,7 +1,11 @@
 # LFM2.5-24B-A2B W8A8 — accuracy / quality suggestions
 
-Context (superseded 2026-10-15): Path 1 (RTN) shipped. Notes below remain
-touches a shipped build — these are forward-looking notes.
+Context (superseded 2026-10-15): Path 1 (RTN) shipped. The notes below
+touch a shipped build — they are forward-looking notes.
+
+Throughout: **the build node** is the GPU host that quantizes, serves, and
+captures KLD; **the client host** drives the speed/extract runs and never
+serves a model.
 
 ## Design review (resolved during development)
 
@@ -65,7 +69,8 @@ on two legs plus a human eval:
 1. **Statistical leg (the build node):** teacher-forced full-vocab KLD and floor-free
    paired comparison (`kld-fullvocab.py`, `kld-paired-floorfree.py`, adapted
    from [`Freaksterz/Qwen3.8-27B-SmoothQuant-W8A8-INT8`](https://huggingface.co/Freaksterz/Qwen3.8-27B-SmoothQuant-W8A8-INT8))
-   over 240 × 512-token WikiText-2 test windows (122,640 positions) against the
+   over 240 × 512-token WikiText-2 test windows (122,640 scored positions — 511
+   per window, since the last token has no next-token target) against the
    offline BF16 reference (`kldfv-lfm-bf16.npz`) and official FP8
    (`LiquidAI/LFM2.5-24B-A2B-FP8`).
 2. **Functional + speed leg (`the client host` -> the build node):** sequential 4-URL arXiv HTML
@@ -167,13 +172,23 @@ wiring tests, and a tautological `s_a` shape assert became a real one.
 
 ### 3. Verified exact (fp32)
 
-- B (q, k AND v columns) and E (GQA v rows / out columns), through HF's own
-  `Lfm2MoeAttention` on layer 2's real weights: 3.9e-7 / 4.6e-7 / 5.3e-7 for
-  B / E / B+E. B without q/k ("v-only", the older advice): 21% off. A wrong GQA
-  expansion (`repeat` instead of `repeat_interleave`): 40% off.
+Parity is measured **against** HF's own `Lfm2MoeAttention` on layer 2's real
+weights — that module is the yardstick here, not a suspect:
+
+- B (q, k AND v columns): 3.9e-7. E (GQA v rows / out columns): 4.6e-7.
+  B+E: 5.3e-7.
 - A+C with the router folded, layer 3: 3.3e-7.
 - BF16 re-rounding of the folded weights: 0.2% block error with routing forced
   to the reference, 0.5-1% with free routing (near-tie router flips).
+
+Two **negative controls** — deliberately broken variants of our own test block,
+run to prove the check can actually fail. Both are our errors, never HF bugs:
+
+- B without q/k ("v-only", the older advice): 21% off.
+- GQA expansion written as `repeat` instead of `repeat_interleave`: 40% off.
+  Only the `out_proj` half of E is GQA-sensitive — each kv head's scale vector
+  must repeat `G` times *in place* to line up with `out_proj`'s columns. This
+  control is what pins our head ordering to HF's `repeat_kv`.
 
 ### 4. Still open: the scale search (`lfm2_alpha.py`)
 
@@ -201,19 +216,18 @@ experts (+43-52% on unseen experts too).
 | Path 3 W8A16-CHANNEL probe | 0.137 | 84.1% | 29.04 | -0.010 |
 | SQ-W8A8 (broken) | 0.704 | 65.1% | 36.72 | +0.225 |
 
+This table is a rounded restatement; the same arms at full precision, with the
+paired bootstrap, are in "Path 3 — W8A16-CHANNEL probe" -> Result.
+
 FP8 vs W8A8 is 0.241 apart, larger than either arm's distance to BF16, so the
 metric has a high floor on this model; positions under 16 carry ~4-7x the KLD
 of positions past 256. Block-level error budget for plain RTN (layers 3 / 24):
 weights alone ~1.0%, input-activation quantization 1.3 / 2.7%, down-input
-activation quantization 3.3 / 2.0%, all together 3.69 / 3.52%. FP8 on Ampere
+activation quantization 3.3 / 2.0%, all together 3.69 / 3.52% — the parts are
+measured separately, so they do not sum to the combined figure. FP8 on Ampere
 runs as W8A16 (no activation quantization); the W8A16-CHANNEL probe below
 measured how much of the gap that is: all of it. E12 targeted the same lever
 but is blocked by vLLM's uniform-scheme wall.
-
-### 6. Next steps
-
-Superseded by Path 3 results: see "Where this leaves the plan" in the
-Path 3 — W8A16-CHANNEL probe section below.
 
 ## Path 3 — W8A16-CHANNEL probe (2026-10-17/18) — what the activation quantizer costs
 
@@ -257,8 +271,15 @@ windows.
 | Path 1 W8A8 | 0.2161 | 79.72% | 29.21 | -0.004 |
 | W8A16-CHANNEL | 0.1369 | 84.05% | 29.04 | -0.010 |
 
+Every quantized arm scores slightly *better* than the BF16 reference on PPL and
+mean dNLL. Read that as the runtime floor, not as a quantization gain: the
+reference is captured offline while the arms are served by vLLM (see "Reading
+it" item 4), and that gap is larger than the differences here.
+
 Paired bootstrap over the 240 windows (positions are correlated inside a
-window, so windows are the independent unit):
+window, so windows are the independent unit). This is the **full-support
+(floored)** statistic — the same one as the table above, so each delta equals
+the difference of the corresponding means there:
 
 | paired difference | KLD | 95% CI | top-1 |
 |---|---|---|---|
@@ -270,8 +291,9 @@ window, so windows are the independent unit):
 FP8 (t = +57.9, better at 66.9% of positions) and FP8 beats W8A8 (t = +36.8).
 That check was required: the `q floor hits` rates (15.6 / 18.3 / 19.8%) track
 the KLD ranking, the pattern that script warns about, and the ranking held.
-The probe's advantage over FP8 is uniform across position buckets (0.65-0.80x),
-and so is the activation cost (W8A8/W8A16 1.5-1.75x), 91% of it past position 16.
+The probe's advantage over FP8 is uniform across position buckets (its KLD is
+0.65-0.80x FP8's in every bucket), and so is the activation cost (W8A8's KLD is
+1.5-1.75x W8A16's), 91% of it past position 16.
 
 ### Reading it
 
@@ -286,15 +308,19 @@ and so is the activation cost (W8A8/W8A16 1.5-1.75x), 91% of it past position 16
    held fixed and nothing with free routing; B small; E +3%; C flat) makes a
    34-43% cut from smoothing alone unlikely. Not measured end to end.
 4. Floor: the three vLLM-vs-vLLM KLDs (FP8-W8A8 0.241, FP8-W8A16 0.192,
-   W8A8-W8A16 0.204) fit a shared HF-vs-vLLM component of about 0.06-0.09 nats
-   that no recipe can remove, plus arm-specific noise of roughly 0.08 (W8A16),
-   0.11 (FP8) and 0.13 (W8A8). That is a first-order additive model whose three
-   estimates of the shared term span 0.03, so it is a guide only. Absolute
-   KLD on this model is not comparable with published figures; only paired
-   differences are.
+   W8A8-W8A16 0.204) fit an additive model `KLD(i,j) = shared + noise_i +
+   noise_j`. That is three equations in four unknowns, so the triangle pins
+   the arm-to-arm differences only and the shared term stays free. Its
+   shared = 0 solution is the arm noise quoted here — 0.13 (W8A8), 0.11 (FP8),
+   0.08 (W8A16) — and any nonzero shared term subtracts from all three alike
+   (0.1265 - s, 0.1145 - s, 0.0775 - s); requiring non-negative arm terms
+   bounds the shared component at 0-0.08 nats. Separating the two needs a
+   direct same-arm HF-vs-vLLM capture, which nothing in this document measures.
+   Absolute KLD on this model is not comparable with published figures; only
+   paired differences are.
 5. By-product: Path 3 (`W8A16-CHANNEL`) is a servable checkpoint that beats FP8
    on every metric measured — both accuracy (0.137 KLD / 84.1% top-1 / 29.04
-   PPL) and speed (~+1% decode TPS and ~3-4% faster TTFT than FP8 across all
+   PPL) and speed (+0.4-0.9% decode TPS and 2.7-3.6% faster TTFT than FP8 across
    all four arXiv extracts: 185.9 / 176.5 / 174.1 / 164.6 tok/s vs FP8's 184.5 /
    175.0 / 173.4 / 163.5). It has no INT8
    compute path, so it serves as our INT8 weight-only baseline on Ampere.
@@ -359,7 +385,7 @@ E12 failed at vLLM startup because it put `w1/w3` in W8A8 and `w2` in W8A16
 *within the same MoE expert*. `CompressedTensorsMoEMethod.get_moe_method` queries
 `.0.gate_proj`, `.0.up_proj`, and `.0.down_proj` on each `RoutedExperts` layer
 and raises `ValueError("All MoE projections need to have same quantization
-scheme")` if they differ.
+scheme but found multiple")` if they differ.
 
 Path 4 respects every fusion boundary in vLLM's `Lfm2MoeForCausalLM`:
 - **`RoutedExperts` (`layers.2..39.feed_forward.experts`):** all three
@@ -405,7 +431,7 @@ the build node before staging.
    cache dir, and container name), then run `warmup.py` from the client host.
 5. **Measure:**
    - **KLD leg (the build node):** `kld-fullvocab.py capture-vllm` against
-     `results/kldfv-lfm-bf16.npz` (`--vocab 128000`), then `compare` and
+     `eval/results/kldfv-lfm-bf16.npz` (`--vocab 128000`), then `compare` and
      `kld-paired-floorfree.py` against BF16, FP8, Path 1 (`w8a8`), and Path 3
      (`w8a16`).
    - **Speed + extract leg (the client host):** sequential 4-URL arXiv run at temp 0,
@@ -422,7 +448,14 @@ the build node before staging.
 | Path 3 `W8A16-CHANNEL` (all Linears W8A16) | 0.1369 | 0.0652 | 84.05% | 29.04 | 15.63% |
 | **Path 4 `W8A8-EXPERTS` (experts W8A8 + attn/dense W8A16)** | **0.1527** (±0.00084) | **0.0749** | **82.91%** | **28.88** | **16.58%** |
 
-Floor-free paired comparisons (`kld-paired-floorfree.py`, K=512):
+Floor-free paired comparisons (`kld-paired-floorfree.py`, K=512). **This is
+a different statistic from the table above, not a recomputation of it.** The
+script sums only over reference ids present in *both* arms' supports, so the
+retained probability mass does not sum to 1 and the result is a comparison
+statistic rather than a KL — in its own words, "the absolute level is
+meaningless". These deltas are by construction smaller in magnitude than the
+differences of the table's KLD column, and subtracting two cells of that table
+will not reproduce them. Compare arms within this block only:
 - **Path 4 vs Liquid FP8:** paired delta **-0.0236 ± 0.00066** (`t = -36.0`,
   floor-free `-16.7%`, Path 4 better at **60.99%** of positions).
 - **Path 4 vs Path 1 `W8A8`:** paired delta **-0.0509 ± 0.00071** (`t = -71.9`,
