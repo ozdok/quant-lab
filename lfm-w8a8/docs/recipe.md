@@ -55,7 +55,8 @@ Expected census: **7342** = 64×38×3 experts + 10×4 attention + 2×3 dense.
   **Known defect:** the grid has no identity candidate and uses true window
   maxima, which per-token dynamic quantization already absorbs. On held-out
   rows the chosen scales were worse than plain RTN for A (26/38 layers), C and
-  E. Revision spec (measured on held-out windows: A +39%, B +66%, E +3%): add
+  E. Revision spec (measured on held-out windows: A +51%, B +66%, E +3%; the A
+  figure is from a re-run over all layers): add
   an identity candidate; use 99.9th-percentile stats of typical rows; exclude
   first-token rows; select on some windows and score on others; normalise `s`
   to unit geometric mean.
