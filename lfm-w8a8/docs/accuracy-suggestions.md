@@ -48,6 +48,11 @@ calibration rows. *Block level* is a whole model block — a MoE block or an
 attention block — end to end. "Block" elsewhere (FP8 weight blocks) means
 something unrelated.
 
+**Error.** Unless stated otherwise, error is the relative squared error of a
+tensor against its unquantized self — `‖ŷ − y‖² / ‖y‖²` — reported as a
+percentage. It is dimensionless, so it is only meaningful next to a named
+baseline and a named level (matmul or block).
+
 **Conventions.** KLD is teacher-forced, full-vocab, against the offline BF16
 capture, over 240 × 512-token WikiText-2 windows (511 scored positions each,
 top-K 512). Logs are natural; everything is in nats. `q floor hits` are
@@ -260,7 +265,12 @@ corrected protocol (identity candidate; 99.9th-percentile stats of typical
 rows; first-token rows excluded; selection on windows 0-63, scoring on windows
 64-95, of the 96 calibration windows) gave, at matmul level: A +39% (0 of the
 11 sampled layers worse), B +66%, E +3%. Percentages in this section are
-relative to the identity (RTN) scales, in this section's error measure. C
+relative reductions in the alpha proxy's error (`X/s` and `W·s` quantized
+per-token and per-channel respectively,
+`err = ‖q(X/s)·q(W·s)ᵀ − X·Wᵀ‖²_F / ‖X·Wᵀ‖²_F`) measured against the identity
+(RTN) scales. Fold B reproduces on the held-out windows at +40.0% against the
++39% quoted here; the same scales read −40.0% against the old grid's
+`(absmax, 0.8)` reference cell, which is why the baseline has to be named. C
 added nothing at block level (3.71 / 3.56% vs RTN 3.69 / 3.52%). At block level
 with routing forced to the reference, corrected A cut the error 3.69 -> 3.58%
 (layer 3) and 3.52 -> 2.73% (layer 24); with free routing the BF16 re-rounding
