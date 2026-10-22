@@ -263,8 +263,9 @@ fold A in 26 of 38 layers (mean -35%, worst -218% at layer 17), fold C in 16 of
 16 sampled experts, and fold E (mean -22%); only B helped (about +39%). A
 corrected protocol (identity candidate; 99.9th-percentile stats of typical
 rows; first-token rows excluded; selection on windows 0-63, scoring on windows
-64-95, of the 96 calibration windows) gave, at matmul level: A +39% (0 of the
-11 sampled layers worse), B +66%, E +3%. Percentages in this section are
+64-95, of the 96 calibration windows) gave, at matmul level: A +51% (0 of the
+38 MoE layers worse — corrected in a re-run over all layers, 2026-10-22),
+B +66%, E +3%. Percentages in this section are
 relative reductions in the alpha proxy's error (`X/s` and `W·s` quantized
 per-token and per-channel respectively,
 `err = ‖q(X/s)·q(W·s)ᵀ − X·Wᵀ‖²_F / ‖X·Wᵀ‖²_F`) measured against the identity
