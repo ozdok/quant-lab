@@ -212,9 +212,11 @@ in the smoothed checkpoint the router saw `x / s_a`.
   `expert_bias` dominated selection.
 - Equivalence before any quantization (fp32, layer 3, real weights): MoE block
   output 21.3% off as built, 3.3e-7 off with the router folded.
-- With INT8 on (emulated block, layers 3 / 12 / 24 / 37): plain RTN
-  3.7 / 3.6 / 3.9 / 3.5%; as built 21 / 35 / 34 / 53%; router fixed but old
-  scales 3.9 / 4.2 / 5.1 / 3.6%.
+- With INT8 emulated at block level (per-token INT8 activations and
+  per-channel INT8 weights simulated in PyTorch on the real calibration rows —
+  no checkpoint built; layers 3 / 12 / 24 / 37): plain RTN 3.7 / 3.6 / 3.9 /
+  3.5%; as built 21 / 35 / 34 / 53%; router fixed but old scales 3.9 / 4.2 /
+  5.1 / 3.6%.
 - The KLD captures agree: the damage is broad (SQ's best-10% window, 0.52, is
   worse than RTN's 90th-percentile window, 0.33), it costs +0.225 nats NLL on
   real text against ~0 for RTN and FP8, and position-0 top-1 agreement is 4.6%
