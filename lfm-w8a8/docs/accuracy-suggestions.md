@@ -1,15 +1,64 @@
-# LFM2.5-24B-A2B W8A8 — accuracy / quality suggestions
+# LFM2.5-24B-A2B INT8 — build log, measurements and open questions
 
-Context (superseded 2026-10-15): Path 1 (RTN) shipped. The notes below
-touch a shipped build — they are forward-looking notes.
+`docs/recipe.md` is the contract; this file is the dev diary behind it — what
+was tried, what it measured, and what is still open. It stays in the order the
+work happened, so the headline result is not at the top: the shipped build is
+**Path 4** (`W8A8-EXPERTS`, § "Path 4 — W8A8-EXPERTS selective split"), and it
+beats the vendor FP8 checkpoint on every accuracy metric measured while
+running 8.2-8.6% faster decode.
 
 Throughout: **the build node** is the GPU host that quantizes, serves, and
 captures KLD; **the client host** drives the speed/extract runs and never
 serves a model.
 
+## Notation and conventions
+
+Terms used from here on without further explanation. Nothing else in the repo
+defines the fold names — `AGENTS.md` describes A and B in passing, but this is
+the only place all four are stated.
+
+**Folds.** Smoothing rewrites that move a per-channel scale off an activation
+and into the weights on either side of it, so the quantizer sees a flatter
+tensor. Planned in `scripts/apply-smoothing-lfm2.py::plan_ops()`; each fold's
+algebra is pinned in `tests/test_fold_plan.py`. They are independent and
+selected with `--folds`.
+
+| fold | scale leaves | scale enters | scope |
+|---|---|---|---|
+| **A** | `ffn_norm` output | every consumer of it — the router (`feed_forward.gate`) and each expert's `w1`/`w3` inputs | layers 2-39 |
+| **B** | `operator_norm` output | attention `q_proj`, `k_proj`, `v_proj` inputs | the 10 attention layers |
+| **C** | each expert's up projection | `w3` rows out, `w2` (down) columns in | layers 2-39, per expert |
+| **E** | each `v_proj` output | `out_proj` input columns, GQA-expanded | the 10 attention layers |
+
+**Paths.** Successive build attempts, in the order they were tried.
+
+| path | scheme | outcome |
+|---|---|---|
+| **Path 1** | `W8A8` — RTN (round-to-nearest), all 7,342 Linears | shipped first; the baseline later paths are measured against |
+| **Path 2** | `SQ-W8A8` — SmoothQuant on Path 1's weights | regressed against Path 1 (KLD 0.7042 vs 0.2161), retired; see the post-mortem |
+| **Path 3** | `W8A16-CHANNEL` — per-channel INT8 weights, no activation quantizer | the probe that priced activation quantization |
+| **Path 4** | `W8A8-EXPERTS` — the 7,296 experts W8A8, 46 attention/dense Linears W8A16 | **the shipped build** |
+
+**Alpha** is `scripts/lfm2_alpha.py` — the offline proxy that computes the
+per-channel scale vectors the folds move, from calibration rows, before the
+quantizer runs. It neither quantizes nor produces a checkpoint.
+
+**Measurement levels.** *Matmul level* is one Linear in isolation, fed
+calibration rows. *Block level* is a whole model block — a MoE block or an
+attention block — end to end. "Block" elsewhere (FP8 weight blocks) means
+something unrelated.
+
+**Conventions.** KLD is teacher-forced, full-vocab, against the offline BF16
+capture, over 240 × 512-token WikiText-2 windows (511 scored positions each,
+top-K 512). Logs are natural; everything is in nats. `q floor hits` are
+positions where a reference id is absent from an arm's stored top-K, so its
+tail mass is spread uniformly across the rest of the vocabulary — the floor
+assumption that `kld-paired-floorfree.py` removes.
+
 ## Design review (resolved during development)
 
-Six items reviewed during development, with their status in this pipeline:
+Six items raised in a design review of this pipeline, each with its status as
+it now stands. Items marked *Outstanding* are still true.
 
 1. **C (moe-down) fold must divide the up side only — scaling the gate side
    is inexact through SiLU.** *Impossible by construction.* LFM2 ships gate
@@ -19,17 +68,20 @@ Six items reviewed during development, with their status in this pipeline:
    `tests/test_lfm2_common.py::test_up_rowdiv_only_is_exact_for_swiglu`
    pins both the correct algebra and the inexactness of the fused-halves
    approach, so a regression would fail loudly. Still outstanding: a parity
-   test on real weights (folded vs unfolded forward, ~1e-3 in BF16).
-2. **Sampling bias in capture.** *Addressed.* `capture-lfm2.py` strides the
-   window selection instead of taking `wins[:n]`. The alpha proxy row cap
-   (`PROXY_ROWS = 4096`) still takes the head of each hook's rows — stride it
-   the same way if the numbers look domain-skewed.
+   test on real weights (folded vs unfolded forward, ~1e-3 relative error in
+   BF16, the expected tolerance).
+2. **Sampling bias in capture.** *Addressed.* `capture-lfm2.py` picks its
+   calibration windows by striding through the corpus instead of taking the
+   first `n`. The alpha proxy still takes the first 4096 rows of each hook
+   (`PROXY_ROWS`) — stride that the same way if the statistics look
+   domain-skewed.
 3. **Audit what "mixed" means in the corpus.** *Outstanding.*
    `calib/calib_mixed.txt` is Wikipedia-heavy; LFM2.5 is a reasoning/agentic
    model, so top up instruction/chat/code content before capture.
-4. **Census only checks experts.** *Addressed.* `quantize_lfm2_sq.census()`
-   counts experts, attention, and dense separately and asserts all of
-   `CENSUS_W8A8` / `CENSUS_W8A16`. A mis-quant of the attention half can no
+4. **Census only checks experts.** *Addressed.* The census — the post-build
+   count of which tensors landed in which scheme — now counts experts,
+   attention, and dense separately and asserts all of `CENSUS_W8A8` /
+   `CENSUS_W8A16`. A mis-quant of the attention half can no
    longer print "census OK".
 5. **Concrete-class fallback.** *Addressed.* Both quantize scripts import
    `Lfm2MoeForCausalLM` directly and let a failure raise.
@@ -37,7 +89,7 @@ Six items reviewed during development, with their status in this pipeline:
    `--gpu-mem` / `--offload` and uses the same accelerate split as the
    quantizers.
 
-## LFM2-specific
+## Model-specific findings (folds and quantizer behaviour)
 
 1. **The B fold and q/k layernorms.** Resolved 2026-10-17: fold q, k AND v
    (fp32 parity through HF's `Lfm2MoeAttention`: 4e-7; v-only: 21% off). See
@@ -73,10 +125,11 @@ on two legs plus a human eval:
    per window, since the last token has no next-token target) against the
    offline BF16 reference (`kldfv-lfm-bf16.npz`) and official FP8
    (`LiquidAI/LFM2.5-24B-A2B-FP8`).
-2. **Functional + speed leg (`the client host` -> the build node):** sequential 4-URL arXiv HTML
-   extraction and structured summarization (`extract_test.py`, `temperature=0`,
-   `--enable-thinking`, 5.5K to 50.6K prompt tokens) plus a blind quality
-   verdict. Note `--enable-thinking` is inert on this model: LFM2.5 always
+2. **Functional + speed leg (the client host -> the build node):** sequential
+   4-URL arXiv HTML extraction and structured summarization (`extract_test.py`,
+   `temperature=0`, `--enable-thinking`, 5.5K to 50.6K prompt tokens — one
+   paper per request, fetched then summarized, run sequentially) plus a blind
+   quality verdict. Note `--enable-thinking` is inert on this model: LFM2.5 always
    thinks (its chat template has no `enable_thinking` variable and
    unconditionally emits `<|im_start|>assistant\n`), and the trace is split
    into `message.reasoning` by the server's `--reasoning-parser qwen3`, which
@@ -107,20 +160,25 @@ latent bugs, all fixed same night:
 4. Window builder missing entirely (`wins` undefined). Added strided
    selection per recipe.
 5. Output dir never created (`calib/acts`). Added makedirs; cost 16
-   windows of compute.
-6. Per-expert `w2` hooks do not exist after HF load (fused 3D params).
-   Tried broadcast-from-routed-in; dimensionally invalid (2048-space
-   stats vs 1536-space scales). Final: alpha recomputes per-expert
-   down-inputs in exact BF16 from shared rows + stored w1/w3, per-expert
-   amaxes, pooled proxy for the grid cell.
-7. Smoothing looked up `self_attn.o_proj`; real name is `out_proj`.
-   (Alpha saved it right; smoothing used the Qwen-family `o_proj` name.)
+   capture windows of compute.
+6. Per-expert `w2` hooks do not exist after HF loads the checkpoint — the
+   expert weights arrive as fused 3-D parameters, so there is no per-expert
+   Linear to attach a hook to. Broadcasting one expert's statistics to the
+   others is dimensionally invalid (the routed input lives in 2048-space, the
+   down projection's scale vector in 1536-space). Final: the alpha proxy
+   recomputes each expert's down-input in exact BF16 from the shared
+   calibration rows plus the stored `w1`/`w3`, takes per-expert amaxes, and
+   pools them into one proxy value for the grid cell.
+7. Smoothing looked up `self_attn.o_proj`; the real name is `out_proj`.
+   (The alpha proxy saved it under the right name; the smoothing script used
+   the Qwen-family `o_proj` spelling.)
 
 Two structural findings, not bugs:
 
 8. vLLM (0.29.0) refuses mixed-scheme MoE: all expert projections must
-   share one quantization scheme. E12 (down at W8A16) builds fine and
-   passes census (4908/2434) but cannot serve. Freaksterz never hit this
+   share one quantization scheme. E12 (Freaksterz's hypothesis: the experts'
+   down projection at W8A16, gate/up at W8A8) builds fine and passes census
+   (4908/2434) but cannot serve. Freaksterz never hit this
    because Qwen3.8 is dense. Pivot:
    uniform RTN on smoothed weights (`LFM2.5-24B-A2B-SQ-W8A8`), which
    serves normally.
@@ -145,7 +203,8 @@ experts. Fold A divided `ffn_norm` by `s_a` and multiplied each expert's
 in the smoothed checkpoint the router saw `x / s_a`.
 
 - Routing, 12,288 calibration rows x 38 MoE layers: the top-4 expert set
-  changed for 62% of tokens (mean slot overlap 80.5%, worst layer ~70%).
+  changed for 62% of tokens (mean slot overlap 80.5% — a slot is one of the
+  four selected expert positions — worst layer ~70%).
   Scaling the gate columns by `s_a` restores 99.87% slot agreement; the rest
   is BF16 rounding of the folded gate.
 - `s_a` was never normalised (geometric mean 1.1 in layer 2, 5.6 in layer 38),
@@ -197,7 +256,9 @@ fold A in 26 of 38 layers (mean -35%, worst -218% at layer 17), fold C in 16 of
 16 sampled experts, and fold E (mean -22%); only B helped (about +39%). A
 corrected protocol (identity candidate; 99.9th-percentile stats of typical
 rows; first-token rows excluded; selection on windows 0-63, scoring on windows
-64-95) gave, at matmul level: A +39% (0 of 11 layers worse), B +66%, E +3%. C
+64-95, of the 96 calibration windows) gave, at matmul level: A +39% (0 of the
+11 sampled layers worse), B +66%, E +3%. Percentages in this section are
+relative to the identity (RTN) scales, in this section's error measure. C
 added nothing at block level (3.71 / 3.56% vs RTN 3.69 / 3.52%). At block level
 with routing forced to the reference, corrected A cut the error 3.69 -> 3.58%
 (layer 3) and 3.52 -> 2.73% (layer 24); with free routing the BF16 re-rounding
@@ -286,6 +347,12 @@ the difference of the corresponding means there:
 | W8A8 - FP8 (the gap) | +0.034 | [+0.022, +0.047] | -1.46 pt |
 | W8A8 - W8A16 (activation quantization) | +0.079 | [+0.069, +0.089] | -4.33 pt |
 | W8A16 - FP8 (INT8 vs FP8 weights) | -0.045 | [-0.055, -0.034] | +2.87 pt |
+
+Both READMEs and the model card quote the **floor-free** equivalents of the
+first and third rows — Path 1 vs FP8 `+0.0265` (`t = +36.8`) and Path 3 vs FP8
+`-0.0364` (`t = -57.9`). They are smaller in magnitude than the rows above for
+the reason given below. Both statistics are correct, and they are not
+interchangeable.
 
 `kld-paired-floorfree.py` (the floor assumption removed) agrees: W8A16 beats
 FP8 (t = +57.9, better at 66.9% of positions) and FP8 beats W8A8 (t = +36.8).
@@ -423,7 +490,8 @@ the build node before staging.
      > logs/path4-w8a8-experts.log 2>&1
    ```
    Verify `census OK` (7296 experts W8A8, 40 attn W8A16, 6 dense W8A16,
-   `mismatch: []`), `expert names restored: 14592 tensors -> w1/w3/w2`,
+   `mismatch: []`), `expert names restored: 14592 tensors -> w1/w3/w2`
+   (two per quantized Linear — weight and scale — so 7296 × 2),
    `channel-wise group_size -> -1`, and `saved scheme verified: W8A8-EXPERTS`.
 4. **Serve & warm up:**
    Serve `~/models/LFM2.5-24B-A2B-W8A8-EXPERTS` on `:8051` via a benchmark
@@ -524,7 +592,8 @@ target sets rather than assuming a fixed `group_0`/`group_1` order, pinned in
   `kldfv-lfm-w8a8.npz`, `kldfv-lfm-sq.npz`, `kldfv-lfm-w8a16.npz`,
   `kldfv-lfm-w8a8-experts.npz` (240 × 512-token WikiText-2 test windows from
   `shared/benchmark-composes/corpus/wiki.test.raw`).
-- **Functional & speed captures on `the client host` (`testing/`):**
+- **Functional & speed captures on the client host (`testing/` — per-arm run
+  transcripts and timings):**
   `lfm-fp8/`, `lfm-w8a8/`, `lfm-w8a16/`, `lfm-w8a8-experts/` (sequential temp-0
   thinking-on runs across `arxiv:2607.15866v1`, `arxiv:2606.16140v1`,
   `arxiv:2603.28052v1`, `arxiv:2610.22111v1`).
